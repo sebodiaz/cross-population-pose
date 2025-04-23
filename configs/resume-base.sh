@@ -1,0 +1,17 @@
+python main.py --run_name=baseline-fixed-old-labels\
+               --gpu_ids=1\
+               --optimizer=adamw\
+               --stage=train\
+               --rot=True\
+               --batch_size=8\
+               --crop_size=64\
+               --epochs=400\
+               --lr_scheduler=linear\
+               --junshen_scale=0.2\
+               --rawdata_path=/unborn/shared/fetal_pose/fetalEPI\
+               --label_path=/unborn/shared/FetalPoseLabel\
+               --aug_type=offline\
+               --dataset_size=4000\
+               --run_id=jrgy4ks6\
+               --use_continue=True\
+               --continue_path="/unborn/sdd/PyTorchPose/runs/baseline-fixed-old-labels/checkpoints/E180.pth"

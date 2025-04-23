@@ -1,0 +1,16 @@
+continue_path="/data/vision/polina/users/sebodiaz/projects/pose/runs/agro_1k_small_zw/checkpoints/latest.pth"
+label_name="04640"
+index_type=1
+path="/data/vision/polina/users/sebodiaz/data/clinical/volumes/04640/"
+output_path="/data/vision/polina/users/sebodiaz/projects/pose/results/inference"
+python /data/vision/polina/users/sebodiaz/projects/pose/main.py --run_name=$label_name\
+                   --gpu_ids=0\
+                   --stage=inference\
+                   --rawdata_path=$path\
+                   --continue_path=$continue_path\
+                   --output_path=$output_path\
+                   --label_name=$label_name\
+                   --index_type=$index_type\
+                   --unet_type=small\
+                   --output_vol=True\
+                   --csail=True\

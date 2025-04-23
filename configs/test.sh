@@ -1,0 +1,14 @@
+run=agro_1k_small
+epoch=latest
+python /data/vision/polina/users/sebodiaz/projects/pose/main.py --run_name="${run}" \
+               --gpu_ids=1 \
+               --stage=test \
+               --continue_path="/data/vision/polina/users/sebodiaz/projects/pose/runs/${run}/checkpoints/${epoch}.pth" \
+               --error_threshold=5 \
+               --unet_type=small \
+               --train_type=offline \
+               --rawdata_path=/data/vision/polina/projects/fetal/common-data/pose/epis \
+               --label_path=/data/vision/polina/projects/fetal/common-data/pose/SeboPoseLabel \
+               --save_path=/data/vision/polina/users/sebodiaz/projects/pose/results/testing \
+               --csail=True \
+               --num_workers=8 \

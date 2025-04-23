@@ -1,8 +1,6 @@
-slurm/
 runs/
 outputs/
 outs/
 logs/
 results/
-configs/
 errors/
