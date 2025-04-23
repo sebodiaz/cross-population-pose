@@ -1,0 +1,5 @@
+slurm/
+runs/
+outputs/
+outs/
+logs/
