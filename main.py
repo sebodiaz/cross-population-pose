@@ -23,6 +23,7 @@ global_step = 0
 
 # Define the main function
 def main(opts):
+    
     # Get the model and amix, if applicable
     model, amix = utils.get_model(opts)
     
@@ -52,12 +53,15 @@ def main(opts):
         
         # Initialize from checkpoint and set the start epoch, if applicable
         if opts.continue_path is not None and opts.stage == 'train':
+            
             model, optimizer, scheduler, continue_epoch = utils.load_model(model, opts, optimizer, scheduler)
             start_epoch     = continue_epoch
         elif opts.continue_path is not None and opts.stage == 'finetune':
+            
             model, _, _, _  = utils.load_model(model, opts, optimizer, scheduler)
             start_epoch     = 0
         else:
+            
             start_epoch     = 0
         
         # Intialize the best val
