@@ -4,6 +4,4 @@ outs/
 logs/
 results/
 errors/
-inspect_process.ipynb
-plot_figures.ipynb
-visualize_splits.ipynb
+*.ipynb
