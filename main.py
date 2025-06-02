@@ -14,6 +14,7 @@ import options
 import wandb
 import torch
 from lightning.fabric import Fabric # this is for multi-gpu 
+import numpy as np
 
 # Enable Tensor core for A6000 and RTX6000
 torch.set_float32_matmul_precision('high')
@@ -25,14 +26,19 @@ global_step = 0
 def main(opts):
     
     # Get the model and amix, if applicable
-    model, amix = utils.get_model(opts)
+    model = utils.get_model(opts)
     
     # Setup Fabric
     fabric      = Fabric(accelerator="gpu", devices=opts.num_gpus, num_nodes=opts.num_nodes, precision="16-mixed" if opts.use_amp else "32")
     fabric.launch()
     
-    # Determine if using anatomix, if enabled.
-    if opts.anatomix: amix = fabric.setup(amix)
+    # Use amix features if applicable
+    if opts.use_amix:
+        amix = utils.get_amix(opts)
+        amix = fabric.setup(amix)
+    else:
+        amix = None
+
 
     # Train stage
     if opts.stage in ['train', 'finetune']:
@@ -43,7 +49,8 @@ def main(opts):
 
         # Define the loss function, optimizer, and scheduler
         loss_fn                = losses.get_loss_fn(opts)
-        optimizer              = optimizers.get_optimizer(model, opts)
+        loss_fn                = fabric.setup(loss_fn)
+        optimizer              = optimizers.get_optimizer(model, loss_fn, opts)
         scheduler              = optimizers.get_scheduler(optimizer, opts, trainloader)
         scaler                 = torch.cuda.amp.GradScaler(enabled=opts.use_amp)
 
@@ -53,11 +60,9 @@ def main(opts):
         
         # Initialize from checkpoint and set the start epoch, if applicable
         if opts.continue_path is not None and opts.stage == 'train':
-            
             model, optimizer, scheduler, continue_epoch = utils.load_model(model, opts, optimizer, scheduler)
             start_epoch     = continue_epoch
         elif opts.continue_path is not None and opts.stage == 'finetune':
-            
             model, _, _, _  = utils.load_model(model, opts, optimizer, scheduler)
             start_epoch     = 0
         else:
@@ -65,26 +70,24 @@ def main(opts):
             start_epoch     = 0
         
         # Intialize the best val
-        best_val        = float('inf')
+        best_val        = float('-inf')
         
         # Loop over the epochs
         for epoch in range(start_epoch, opts.epochs):
             # Train function
-            utils.train(epoch, model, trainloader, loss_fn, optimizer, scheduler, scaler, amix, fabric, opts) 
+            utils.train(epoch, model, trainloader, loss_fn, optimizer, scheduler, scaler, fabric, opts, amix) 
             
             # Save the latest model
             utils.save_model_latest(model, optimizer, scheduler, epoch, opts)
 
             # Validate the model every opts.val_freq epochs
-            if epoch % opts.val_freq == 0 or epoch == opts.epochs-1:
+            if (epoch % opts.val_freq == 0 or epoch == opts.epochs-1) and epoch > 0:
                 if opts.stage == 'train':
                     # Validation function
-                    res = utils.validate(epoch, model, valloader, loss_fn, scaler, amix, opts)
+                    pck, hausdorff  = utils.validate(epoch, model, valloader, loss_fn, scaler, opts, amix)
                     
-                    # Save the best validation (not the best indicator of mode performance in our setting)
-                    if res < best_val:
-                        best_val = res
-                        utils.save_model_best(model, optimizer, scheduler, epoch, opts)
+                    # Log the metrics
+                    utils.save_model_best(model, optimizer, scheduler, epoch, opts)
                 
         # Finish wandb
         wandb.finish()
@@ -107,7 +110,7 @@ def main(opts):
         model = fabric.setup(model)
         
         # Inference function
-        utils.inference(model, amix, opts) if opts.temporal < 2 else utils.inference_temporal(model, opts)
+        utils.inference(model, opts) if opts.temporal < 2 else utils.inference_temporal(model, opts)
 
 
 

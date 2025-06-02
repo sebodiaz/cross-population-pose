@@ -347,7 +347,7 @@ class Unet(torch.nn.Module):
             raise NotImplementedError   
 
 ## Convolutional Block
-class ConvBlock(torch.nn.Module):
+class ConvBlockOld(torch.nn.Module):
     """
     A convolutional block with optional normalization and activation.
 
@@ -464,18 +464,345 @@ class ConvBlock(torch.nn.Module):
         return x
 
 
+class ConvBlock(torch.nn.Module):
+    """
+    Block for double convolution with normalization and activation.
+    """
+    def __init__(self, in_channels, out_channels, dimension, doubleconv=True, 
+                 norm='batch', activation='relu', pad_type='reflect', use_bias=False, use_residual=False,
+                 verbose=False):
+        super().__init__()
+        self.verbose = verbose
+        self.use_residual = False
+        Conv = getattr(torch.nn, f'Conv{dimension}d')
+        Norm = get_norm_layer(dimension, norm)
+        Activation = get_actvn_layer(activation)
+        
+        # Allocate residual connections, if applicable
+        self.res_dest = []
+        self.res_source = []
+        self.residual_connection = use_residual
+
+        # First convolution block
+        self.layers = []
+        self.layers.append(Conv(in_channels, out_channels, kernel_size=3, stride=1,
+                      bias=use_bias, padding='same', padding_mode=pad_type))
+        
+        if use_residual: self.res_source += [len(self.layers) - 1]
+        if Norm is not None: self.layers.append(Norm(out_channels))
+        if Activation is not None:self.layers.append(Activation)
+        if use_residual: self.res_dest += [len(self.layers) - 1]
+        
+        # Second convolution block (optional)
+        if doubleconv:
+            self.layers.append(Conv(out_channels, out_channels, kernel_size=3, stride=1,
+                          bias=use_bias, padding='same', padding_mode=pad_type))
+            if use_residual: self.res_source += [len(self.layers) - 1]
+            if Norm is not None:
+                self.layers.append(Norm(out_channels))
+            if Activation is not None:
+                self.layers.append(Activation)
+            if use_residual: self.res_dest += [len(self.layers) - 1]
+
+        self.conv_block = torch.nn.Sequential(*self.layers)
+    
+    def forward(self, x):
+        feat = x
+        for layer_id, layer in enumerate(self.layers):
+            feat = layer(feat)
+            if self.residual_connection and layer_id in self.res_source:
+                if self.verbose: print(f"using residual source: {layer_id}")
+                feat_tmp = feat
+            if self.residual_connection and layer_id in self.res_dest:
+                assert feat_tmp.size() == feat.size()
+                if self.verbose: print(f"using residual dest: {layer_id}")
+                feat = feat + 0.1 * feat_tmp
+    
+        return feat
+
+class DownBlock(torch.nn.Module):
+    """
+    Downsampling block for the encoder part of UNet.
+    """
+    def __init__(self, in_channels, out_channels, dimension, doubleconv=True,
+                 norm='batch', activation='relu', pad_type='reflect', 
+                 pooling='Max', use_bias=False, residual_connection=False,):
+        super().__init__()
+        self.residual_connection = residual_connection
+        
+        # Create pooling layer
+        Pool = getattr(torch.nn, f'{pooling}Pool{dimension}d')
+        self.pool = Pool(2)
+        
+        # Create convolution block
+        self.conv = ConvBlock(
+            in_channels, out_channels, dimension, doubleconv, 
+            norm, activation, pad_type, use_bias, use_residual=residual_connection,
+        )
+    
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.pool(x)
+        return x
+
+class UpBlock(torch.nn.Module):
+    """
+    Upsampling block for the decoder part of UNet.
+    """
+    def __init__(self, in_channels, out_channels, dimension, doubleconv=False,
+                 norm='batch', activation='relu', pad_type='reflect',
+                 interp='nearest', use_bias=False, residual_connection=False,
+                 use_skip_connection=True, verbose=False,):
+        super().__init__()
+        self.verbose = verbose
+        self.residual_connection = residual_connection
+        self.use_skip_connection = use_skip_connection
+        
+        # Create upsampling layer
+        self.up = torch.nn.Upsample(scale_factor=2, mode=interp)
+        
+        # Input channels adjustment for the skip connection
+        
+        # Create convolution block
+        self.conv1 = ConvBlock(
+            in_channels, out_channels, dimension, doubleconv,
+            norm, activation, pad_type, use_bias, residual_connection, verbose,
+        )
+
+        self.conv2 = ConvBlock(
+            out_channels, out_channels, dimension, doubleconv,
+            norm, activation, pad_type, use_bias, residual_connection, verbose,
+        )
+
+        
+
+    def forward(self, x, skip=None):
+        
+        if self.use_skip_connection and skip is not None:
+            # Concatenate skip connection
+            if self.verbose: print("Concatenating")
+            x = torch.cat([skip, x], dim=1)
+        x = self.up(x)
+        x = self.conv1(x)
+        x = self.conv2(x)
+
+        return x
+
+## Network ##
+class DualUNet(torch.nn.Module):
+    def __init__(
+        self, dimension=3, input_nc=1, output_nc=[2, 15], num_downs=4, ngf=16, norm='batch',
+        final_act='none', activation='relu', pad_type='reflect', 
+        doubleconv=True, residual_connection=False, 
+        pooling='Max', interp='nearest', use_skip_connection=True,
+        verbose=False, 
+    ):
+        super(DualUNet, self).__init__()
+        self.verbose = verbose
+        use_bias = norm == 'instance'
+        self.use_skip_connection = use_skip_connection
+        FinalActivation = get_actvn_layer(final_act)
+
+        ## Initial Conv ##
+        self.initial_conv = ConvBlock(
+            in_channels   = input_nc,
+            out_channels  = ngf,
+            dimension     = dimension,
+            doubleconv    = False,
+            norm          = norm,
+            activation    = activation,
+            pad_type      = pad_type,
+            use_bias      = use_bias,
+            use_residual  = False,
+            verbose       = verbose,
+        )
+
+        ## Encoder ##
+        self.down_blocks   = torch.nn.ModuleList()
+        in_ngf            = ngf
+        self.skip_channels = []
+        for i in range(num_downs):
+            mult     = 1 if i == 0 else 2
+            out_ngf  = in_ngf * mult
+            self.down_blocks.append(DownBlock(
+                in_channels         = in_ngf,
+                out_channels        = out_ngf,
+                dimension           = dimension,
+                doubleconv          = doubleconv,
+                norm                = norm,
+                activation          = activation,
+                pad_type            = pad_type,
+                pooling             = pooling,
+                use_bias            = use_bias,
+                residual_connection = residual_connection,
+            ))
+            self.skip_channels.append(out_ngf)
+            in_ngf = out_ngf
+
+        ## Bottleneck ##
+        self.bottleneck = ConvBlock(
+            in_channels   = in_ngf,
+            out_channels  = in_ngf * 2,
+            dimension     = dimension,
+            doubleconv    = doubleconv,
+            norm          = norm,
+            activation    = activation,
+            pad_type      = pad_type,
+            use_bias      = use_bias,
+            use_residual  = residual_connection,
+            verbose       = verbose,
+        )
+        bottleneck_out_ch = in_ngf * 2
+
+        ## Decoder 1 ##
+        self.decoder1 = self.make_decoder(
+            bottleneck_ch       = bottleneck_out_ch,
+            skip_channels       = self.skip_channels,
+            ngf                 = ngf,
+            num_downs           = num_downs,
+            dimension           = dimension,
+            norm                = norm,
+            activation          = activation,
+            pad_type            = pad_type,
+            interp              = interp,
+            use_bias            = use_bias,
+            residual_connection = residual_connection,
+            doubleconv          = doubleconv,
+        )
+
+        ## Decoder 2 ##
+        self.decoder2 = self.make_decoder(
+            bottleneck_ch       = bottleneck_out_ch,
+            skip_channels       = self.skip_channels,
+            ngf                 = ngf,
+            num_downs           = num_downs,
+            dimension           = dimension,
+            norm                = norm,
+            activation          = activation,
+            pad_type            = pad_type,
+            interp              = interp,
+            use_bias            = use_bias,
+            residual_connection = residual_connection,
+            doubleconv          = doubleconv,
+        )
+
+        ## Final Convs ##
+        self.final_act1 = self.make_final(
+            output_nc       = output_nc[0],
+            in_channels     = ngf,
+            dimension       = dimension,
+            pad_type        = pad_type,
+            use_bias        = use_bias,
+            FinalActivation = FinalActivation,
+        )
+        self.final_act2 = self.make_final(
+            output_nc       = output_nc[1],
+            in_channels     = ngf,
+            dimension       = dimension,
+            pad_type        = pad_type,
+            use_bias        = use_bias,
+            FinalActivation = FinalActivation,
+        )
+
+    def make_decoder(
+        self, bottleneck_ch, skip_channels, ngf, num_downs, dimension,
+        norm, activation, pad_type, interp, use_bias,
+        residual_connection, doubleconv
+    ):
+        ups = torch.nn.ModuleList()
+        in_ch = bottleneck_ch
+        for i in range(num_downs):
+            skip_ch = skip_channels[-(i + 1)] if self.use_skip_connection else 0
+            out_ch  = ngf * (2 ** (num_downs - i - 1))
+            ups.append(UpBlock(
+                in_channels         = in_ch + skip_ch,
+                out_channels        = out_ch,
+                dimension           = dimension,
+                doubleconv          = doubleconv,
+                norm                = norm,
+                activation          = activation,
+                pad_type            = pad_type,
+                interp              = interp,
+                use_bias            = use_bias,
+                residual_connection = residual_connection,
+                use_skip_connection = self.use_skip_connection,
+                verbose             = self.verbose,
+            ))
+            in_ch = out_ch
+        return ups
+
+    def make_final(self, output_nc, in_channels, dimension, pad_type, use_bias, FinalActivation):
+        Conv = getattr(torch.nn, f'Conv{dimension}d')
+        final = torch.nn.ModuleList()
+        final.append(Conv(
+            in_channels     = in_channels,
+            out_channels    = output_nc,
+            kernel_size     = 3,
+            stride          = 1,
+            bias            = use_bias,
+            padding         = 1,
+            padding_mode    = pad_type,
+        ))
+        if FinalActivation is not None:
+            final.append(FinalActivation)
+        return final
+
+    def forward(self, x):
+        x = self.initial_conv(x)
+
+        # Encoder with skip collection
+        skips = []
+        for layer in self.down_blocks:
+            x = layer(x)
+            if self.use_skip_connection:
+                skips.append(x)
+        skips = skips[::-1]
+
+        # Bottleneck
+        x = self.bottleneck(x)
+
+        # Decoder branch 1
+        x1 = x
+        for i, layer in enumerate(self.decoder1):
+            skip = skips[i] if self.use_skip_connection else None
+            x1 = layer(x1, skip)
+        for layer in self.final_act1:
+            x1 = layer(x1)
+
+        # Decoder branch 2
+        x2 = x
+        for i, layer in enumerate(self.decoder2):
+            skip = skips[i] if self.use_skip_connection else None
+            x2 = layer(x2, skip)
+        for layer in self.final_act2:
+            x2 = layer(x2)
+
+        return torch.cat([x1, x2], dim=1)
+        #return x1, x2
+
+
 # Example case
 if __name__ == "__main__":
-    # Instantiate model
-    model = Unet(dimension=3, input_nc=1, output_nc=15,
-                 num_downs=4, ngf=16)
+    model = DualUNet2(
+    dimension=3,
+    input_nc=1,
+    output_nc=[2,15],
+    num_downs=4,
+    ngf=16,
+    norm='batch',
+    activation='relu',
+    pad_type='reflect',
+    use_skip_connection=True
+)
+
+    # Dummy input tensor: (batch_size=1, channels=3, height=288, width=288)
+    x = torch.randn(1, 1, 128, 128, 128)
+
+    # Forward pass
+    out1, out2 = model(x)
+
+    print("Output 1 shape:", out1.shape)
+    print("Output 2 shape:", out2.shape)
     
-    # Get random tensor
-    x     = torch.randn(4, 1, 64, 64, 64)
-
-    # Get model summary
     from torchinfo import summary
-    summary(model, input_data=x)
-
-    # Run through the model
-    print(f"Input: {x.shape} --> Output: {model(x).shape}")
+    summary(model)

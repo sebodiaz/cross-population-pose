@@ -3,14 +3,14 @@ File containing the optimizer and scheduler functions.
 
 Separate file from utils.py to keep it organized.
 
-Originally wrriten by Sebo 01/07/2025
+Originally wrriten by #### 01/07/2025
 """
 
 import torch
 import math
 
 # Get the optimizer for the model 
-def get_optimizer(model, opts):
+def get_optimizer(model, loss_fn, opts):
     """
     Get the optimizer for the model based on the options.
     
@@ -21,10 +21,22 @@ def get_optimizer(model, opts):
     Returns:
         The optimizer for the model
     """
+    if opts.learn_coeff:
+        params_to_optimize = list(model.parameters()) + list(loss_fn.parameters())
+    else:
+        params_to_optimize = model.parameters()
+    
+    
     if opts.optimizer == 'adam': 
-        optimizer = torch.optim.Adam(model.parameters(), lr=opts.lr)
+        optimizer = torch.optim.Adam(params_to_optimize,
+                                     lr=opts.lr,
+                                     weight_decay=opts.weight_decay)
     elif opts.optimizer == 'adamw':
-        optimizer = torch.optim.AdamW(model.parameters(), lr=opts.lr, weight_decay=opts.weight_decay)
+        optimizer = torch.optim.AdamW(params_to_optimize,
+                                      lr=opts.lr,
+                                      weight_decay=opts.weight_decay)
+    
+    
 
     return optimizer
 
