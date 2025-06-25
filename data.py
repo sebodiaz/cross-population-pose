@@ -16,6 +16,8 @@ from scipy.ndimage import zoom
 import torch
 import torchio as tio
 import numpy as np
+import monai
+import glob
 
 # Training, validation, and testing subjects
 data_train = [
@@ -194,8 +196,6 @@ class Dataset(torch.utils.data.Dataset):
         self.subjects   = sorted(globals()['data_' + stage])
         self.norm       = NormalizeByPercentile()
         
-        # hardcode the segmentation file for now
-        self.segmentation_file = "/data/vision/polina/projects/fetal/common-data/pose/body_segs_dates_cropped/"
 
         ## Determine whether to use `zoom womb` or `fetal inpainting`... they are the same thing.
         if self.opts.use_fetal_inpainting is True and self.stage == 'train':
@@ -212,7 +212,7 @@ class Dataset(torch.utils.data.Dataset):
             for filename, label in zip(niinames, labels):
                 base_fname = os.path.basename(filename)
                 seg_path   = os.path.join(self.segmentation_file, subject, base_fname)
-                self.data.append({'foldername': subject, 'filename': filename, 'label': label, 'sid': dn, 'zm': zw, 'segmentation': seg_path})
+                self.data.append({'foldername': subject, 'filename': filename, 'label': label, 'sid': dn, 'zm': zw,})
         
         self.initialize_augmentations()
         print(f"Stage: {stage} | Total Volumes: {len(self.data)}")
@@ -267,11 +267,10 @@ class Dataset(torch.utils.data.Dataset):
                         zoom_factor = uniform(0.55, 0.65)
                         # Create two Zoom transforms: one for volume, one for seg
                         zoomer_vol = Zoom(zf=zoom_factor, order=1)
-                        zoomer_seg = Zoom(zf=zoom_factor, order=0)
 
                         # Apply zoom immediately to subject parts
                         subject['raw_volume'] = zoomer_vol(subject['raw_volume'])
-                        subject['segmentation'] = zoomer_seg(subject['segmentation'])
+
 
                         per_image_transforms.append(self.augmentations['noise'])
                         per_image_transforms.append(self.augmentations['clamp'])
@@ -314,12 +313,9 @@ class Dataset(torch.utils.data.Dataset):
         segmentation, _ = read_nifti(data['segmentation'])
 
         ## Load the subject using TorchIO ##
-        #subject_dict                = {}
-        #subject_dict["raw_volume"]  = tio.ScalarImage(tensor=torch.tensor(volume[None, ...]))
         subject_dict = {
-        "raw_volume": tio.ScalarImage(tensor=torch.tensor(volume[None, ...])),
-        "segmentation": tio.LabelMap(tensor=torch.tensor(segmentation[None, ...]))
-        }
+                    "raw_volume": tio.ScalarImage(tensor=torch.tensor(volume[None, ...])),
+                        }
         subject                     = tio.Subject(**subject_dict)
 
         # Normalize the subject
@@ -339,28 +335,28 @@ class Dataset(torch.utils.data.Dataset):
         
         # Extract augmented volumes
         aug_volume          = subject['raw_volume'].data[0].numpy()
-        aug_segmentation    = subject['segmentation'].data[0].numpy()
-
         aug_volume, origin  = self.crop(aug_volume)
-        aug_segmentation, _ = self.crop(aug_segmentation, origin)
         
-
-        # Generate heatmap if in train and val
+        # Generate label depending on format
         if self.stage == 'train':
-            heatmap = self.gen_hmap(joint_coord, origin, zoom_factor)
+            if self.opts.label_format == "heatmaps":
+                label = self.gen_hmap(joint_coord, origin, zoom_factor)
+            elif self.opts.label_format == "segmentations":
+                label = self.gen_spheres(joint_coord, origin, zoom_factor)
+            else:
+                raise ValueError(f"Unknown label_format: {self.opts.label_format}")
+
                 
         # Ensure primary volume has a channel dimension
         aug_volume       = np.expand_dims(aug_volume, axis=0)
-        aug_segmentation = np.expand_dims(aug_segmentation, axis=0)
 
         if self.stage == 'train':
             
             # Rotate
             if self.opts.rot and random() < self.opts.augmentation_prob and self.stage == 'train':
-                aug_volume, heatmap, aug_segmentation = random_rot(aug_volume, heatmap, aug_segmentation)
-                aug_volume                            = aug_volume.copy()
-                heatmap                               = heatmap.copy()
-                aug_segmentation                      = aug_segmentation.copy()
+                aug_volume, label, aug_segmentation = random_rot(aug_volume, label, aug_segmentation)
+                aug_volume                          = aug_volume.copy()
+                label                               = label.copy()
                 
             # Baseline's gamma augmentations
             if self.opts.baseline_gamma is not None:
@@ -369,9 +365,9 @@ class Dataset(torch.utils.data.Dataset):
         
         ## Returning for single frame training ##
         if self.stage == 'train':
-            return aug_volume, heatmap, aug_segmentation
+            return aug_volume, label
         if self.stage == 'val':
-            return aug_volume, joint_coord, aug_segmentation
+            return aug_volume, joint_coord
         if self.stage == 'test':
             return aug_volume, joint_coord, data['sid']
 
@@ -416,6 +412,8 @@ class Dataset(torch.utils.data.Dataset):
         # Create the Gaussian
         heatmap = self.opts.mag * np.exp(-0.5 / (self.opts.sigma * zoom_factor) ** 2 * dd)
         return heatmap.astype(np.float32, copy=False)
+    
+
 
 
 if __name__ == '__main__':

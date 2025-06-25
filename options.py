@@ -42,6 +42,8 @@ class Options:
                                  help='whether to use the baseline model')
         self.parser.add_argument('--train_type', type=utils.check_arg(str, ['seg', 'seg+pose', 'pose']), default='seg+pose',
                                  help='set the stage of the code')
+        self.parser.add_argument('--label_format', type=utils.check_arg(str, ['segmentations', 'heatmaps']), default='heatmaps',
+                                 help='how to encode the *keypoint* labels, either as segmentations or heatmaps')
         
         # For multi-GPU training, if applicable
         self.parser.add_argument('--num_nodes', type=int, default=1,

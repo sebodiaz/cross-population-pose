@@ -21,7 +21,12 @@ import scipy.io as io
 import random
 import torchio as tio
 import monai
-import sklearn
+import data
+
+joint_names = ['left_ankle', 'right_ankle', 'left_knee', 'right_knee', 'bladder',
+               'left_elbow', 'right_elbow', 'left_eye', 'right_eye', 'left_hip',
+               'right_hip', 'left_shoulder', 'right_shoulder', 'left_wrist',
+               'right_wrist',]
 
 # Transformations
 class NormalizeByPercentile(tio.Transform):
@@ -160,21 +165,7 @@ def set_seeds(seed):
     # print(f"Seed: {seed}, torch: {torch.initial_seed()}, numpy: {np.random.get_state()[1][0]}, random: {random.getstate()[1][0]}")
     
 # Get the dataloader
-def get_dataloaders(opts):
-    if opts.stage == 'train':
-        train_dl, val_dl = get_offline_dataloader(opts)
-        return train_dl, val_dl
-    if opts.stage == 'finetune':
-        train_dl, _ = get_offline_dataloader(opts)
-        return train_dl, _
-    elif opts.stage == 'test':
-        test_dl = get_offline_dataloader(opts)
-        return test_dl
-    
-def get_offline_dataloader(opts):
-    import data
-    from torch.utils.data import DataLoader
-    
+def get_dataloader(opts):    
     if opts.stage == 'train':
         
         # Get the validation and training datasets
@@ -182,29 +173,34 @@ def get_offline_dataloader(opts):
         train_val   = data.Dataset('val', opts)
  
         # if the dataset size is hardcoded, shuffle... it is recommended to use the --seed argument for this
+        # this shrinks the dataset to a specific size, useful for debugging
         if opts.dataset_size is not None:
             indices     = torch.randperm(len(train_ds)).tolist()
             rnd_indices = indices[:opts.dataset_size]
             train_ds    = torch.utils.data.Subset(train_ds, rnd_indices)
 
         # get the dataloaders
-        train_dl    = DataLoader(train_ds, batch_size=opts.batch_size, shuffle=True, num_workers=opts.num_workers, pin_memory=True, persistent_workers=True)
-        val_dl      = DataLoader(train_val, batch_size=1, shuffle=False, num_workers=opts.num_workers, pin_memory=True, persistent_workers=True, drop_last=False)
+        train_dl    = torch.utils.data.DataLoader(train_ds, batch_size=opts.batch_size, shuffle=True, num_workers=opts.num_workers, pin_memory=True, persistent_workers=True)
+        val_dl      = torch.utils.data.DataLoader(train_val, batch_size=1, shuffle=False, num_workers=0, pin_memory=True, persistent_workers=True, drop_last=False)
 
         return train_dl, val_dl
-    
-    elif opts.stage == 'finetune':
-        # TODO
-        train_dl    = DataLoader(train_ds, batch_size=opts.batch_size, shuffle=True, num_workers=opts.num_workers)
+
+        
+    elif opts.stage == 'finetune': # TODO
+        train_dl    =  torch.utils.data.DataLoader(train_ds, batch_size=opts.batch_size, shuffle=True, num_workers=opts.num_workers)
         
         return train_dl, None
 
     elif opts.stage == 'test':
         # create the dataset
         test_ds     = data.Dataset('test', opts)
-        test_dl     = DataLoader(test_ds, batch_size=1, shuffle=False, num_workers=opts.num_workers)
+        test_dl     =  torch.utils.data.DataLoader(test_ds, batch_size=1, shuffle=False, num_workers=opts.num_workers)
         
-        return test_dl
+    
+        return test_dl, None
+    
+
+
 
 # Save the model
 def save_model_best(model, optimizer, scheduler, epoch, opts):
@@ -225,7 +221,7 @@ def save_model_latest(model, optimizer, scheduler, epoch, opts):
 
 # Get amix
 def get_amix(opts):
-    from model_zoo.small_unet import Unet
+    from models.small_unet import Unet
     amix = Unet(dimension=3,
                 input_nc=1,
                 output_nc=16,
@@ -276,32 +272,18 @@ def get_model(opts):
     return get_model.get_models(opts)
 
 # Training function
-def train(epoch, model, dataloader, loss_fn, optimizer, scheduler, scaler, fabric, opts, amix):
-    # Set the model to training mode // important for batchnorm layers
-    model.train()
-    
-    if amix is not None:
-        amix.eval()
-    
-    # Intialize the cumulative loss // for logging purposes
+def train(epoch, model, dataloader, loss_fn, optimizer, scheduler, fabric, opts):
+    model.train() # set the model to training mode // important for batchnorm layers
     cumulative_loss = 0
     
     progress_bar = tqdm(enumerate(dataloader), total=len(dataloader), desc='Training', ncols=70, leave=False)
     progress_bar.set_description_str(f'Training | Epoch {epoch}')
     
-    for i, (vol, heatmap, segmentation) in progress_bar:
+    for i, (vol, labels) in progress_bar:
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=opts.use_amp):
             # perform the training steps
             optimizer.zero_grad()                                               # zero the gradients
-            
-            if amix is not None:
-                with torch.no_grad():
-                    feats = amix(vol)                                                # apply the amix model to the input volume
-                    vol   = torch.cat((vol, feats), dim=1)                          # concatenate the amix features to the input volume
-                    if opts.dropout > 0:
-                        vol = torch.nn.functional.dropout3d(vol, p=opts.dropout, training=True)
-            
-            loss    = loss_fn(model, vol, [heatmap, segmentation], opts, 'train')
+            loss    = loss_fn(model, vol, labels, opts, 'train')
             fabric.backward(loss)                                               # backward pass
             optimizer.step()                                                    # update the weights
             
@@ -328,62 +310,24 @@ def train(epoch, model, dataloader, loss_fn, optimizer, scheduler, scaler, fabri
     return
 
 # Validation function
-def validate(epoch, model, dataloader, loss_fn, scaler, opts, amix):
-    """ Validate the model. We use PCK for keypoint regression and Dice for segmentation. """
-    # Set the model to evaluation mode
-    model.eval()
-    
-    if amix is not None:
-        amix.eval()
-        
+def validate(epoch, model, dataloader, opts):
+    """ Validate the model. We use PCK for keypoint regression. """
+    model.eval() # eval mode // important for batchnorm layers
     
     progress_bar    = tqdm(enumerate(dataloader), total=len(dataloader), desc='Validation', ncols=70, leave=False)
     progress_bar.set_description_str(f'Validation | Epoch {epoch}')
 
-    
     pcks    = []
-    haussdorffs   = []
-    # Iterate over the validation dataset
-    for ii, (vol, joint_coord, segmentations) in progress_bar:
+    
+
+    for ii, (vol, joint_coord) in progress_bar:
+        assert vol.shape[0] == 1, "Batch size must be 1 during validation"
         with torch.no_grad():
-            if amix is not None:
-                with torch.no_grad():
-                    feats = amix(vol)                                                # apply the amix model to the input volume
-                    vol   = torch.cat((vol, feats), dim=1)                          # concatenate the amix features to the input volume
-            
-            # Run model's forward pass
-            prediction      = model(vol)
-            
-            # Get the individual keypoints
-            joint_coord     = joint_coord[0].cpu().numpy()
-            
-            # If the model is trained with segmentation, get the segmentation output
-            if opts.train_type == 'seg+pose':
-                seg_pred        = prediction[:, 0:2, ...] # get the segmentation output
-                prediction      = prediction[:, 2:, ...]  # get the keypoint output
-                
-                probs           = torch.softmax(seg_pred, dim=1)
-                preds           = torch.argmax(probs, dim=1, keepdim=True)
-                hd              = monai.metrics.compute_hausdorff_distance(include_background=False, y_pred=preds, y=segmentations)
-                haussdorffs.append(hd.cpu().numpy())
+            prediction      = model(vol) # fwd pass
+            joint_coord     = joint_coord[0].cpu().numpy() # get the prediction (since batch size == 1, we can just take the first element)
+            kp_pred         = torch.nn.functional.relu(prediction).cpu()[0].numpy() # ensure no negative values
 
-                
-                kp_pred         = torch.nn.functional.relu(prediction).cpu()[0].numpy() 
-
-            elif opts.train_type == 'pose':
-                kp_pred         = torch.nn.functional.relu(prediction).cpu()[0].numpy() # get the keypoint output
-            
-            elif opts.train_type == 'seg':
-                probs          = torch.softmax(prediction, dim=1)
-                preds          = torch.argmax(probs, dim=1, keepdim=True)
-                hd             = monai.metrics.compute_hausdorff_distance(include_background=False, y_pred=preds, y=segmentations)
-                haussdorffs.append(hd.cpu().numpy())
-                
-                
-
-
-        if opts.train_type != 'seg':
-            predict_coord = np.zeros_like(joint_coord)
+            predict_coord   = np.zeros_like(joint_coord)
             for i in range(joint_coord.shape[-1]):
                 if joint_coord[2, i] <= 0:
                     joint_coord[:, i]   = np.nan
@@ -409,36 +353,21 @@ def validate(epoch, model, dataloader, loss_fn, scaler, opts, amix):
             e = predict_coord - joint_coord # shape (3, 15)
             e = (e[0,:]**2 + e[1,:]**2 + e[2,:]**2)**0.5 # shape (15,)
             pcks.append(e)
-    if opts.train_type != 'seg':
-        error                                       = np.array(pcks) # shape (len(testloader), 15)
-        error_pck                                   = error.copy()
-        error_pck[error > opts.error_threshold]     = 0 # allocate 0 if the error is greater than the threshold
-        error_pck[error <= opts.error_threshold]    = 1 # allocate 1 if the error is less than the threshold
-        pck_error                                   = np.sum(error_pck, 0) / error_pck.shape[0]
-        pck_error_all                               = np.round(np.mean(pck_error), 3) # total average pck error across all joints
-    
-    if opts.train_type == 'seg+pose':
-        # Log the validation loss and pck error to wandb
-        segmentation_loss = np.mean(haussdorffs)
-        wandb.log({'Validation/haussdorff_loss': segmentation_loss, 'Validation/pck_error': pck_error_all})
-        
-    
-    elif opts.train_type == 'pose':
-        # Log the validation loss and pck error to wandb
-        wandb.log({'Validation/pck_error': pck_error_all})
-        segmentation_loss = 0
-    
-    elif opts.train_type == 'seg':
-        # Log the validation loss and pck error to wandb
-        segmentation_loss = np.mean(haussdorffs)
-        wandb.log({'Validation/haussdorff_loss': segmentation_loss})
-        pck_error_all = 0
-    
-    
-    
-    
-        
-    return pck_error_all, segmentation_loss
+    error                                       = np.array(pcks) # shape (len(testloader), 15)
+    error_pck                                   = error.copy()
+    error_pck[error > opts.error_threshold]     = 0 # allocate 0 if the error is greater than the threshold
+    error_pck[error <= opts.error_threshold]    = 1 # allocate 1 if the error is less than the threshold
+    pck_error                                   = np.sum(error_pck, 0) / error_pck.shape[0]
+    avg_pck                                     = np.round(np.mean(pck_error), 3) # total average pck error across all joints
+
+    log_data = {'Validation/avg_pck': avg_pck}
+    for name, val in zip(joint_names, pck_error):
+        log_data[f'Validation/pck_{name}'] = val
+    wandb.log(log_data)
+
+
+    model.train() # set the model back to training mode
+    return avg_pck
 
 # Test function
 def test(model, dataloader, opts):

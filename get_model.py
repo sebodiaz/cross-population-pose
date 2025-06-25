@@ -1,5 +1,5 @@
-from model_zoo.small_unet import Unet, DualUNet
-from model_zoo.big_unet import UNet3D
+from models.small_unet import Unet, DualUNet
+from models.big_unet import UNet3D
 
 def get_models(opts):
 
