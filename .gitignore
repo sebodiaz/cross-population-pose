@@ -15,3 +15,5 @@ inpainting/raw-bold-epi/*
 !inpainting/raw-bold-epi/.gitkeep
 inpainting/raw-bold-epi-outputs/*
 !inpainting/raw-bold-epi-outputs/.gitkeep
+inpainting/train-data/*
+!inpainting/train-data/.gitkeep
