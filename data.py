@@ -414,12 +414,10 @@ class Dataset(torch.utils.data.Dataset):
         return heatmap.astype(np.float32, copy=False)
     
 
-
-
 if __name__ == '__main__':
     # Test the data
-    opts = {'rawdata_path': '/data/vision/polina/projects/fetal/common-data/pose/epis',
-            'label_path': '/data/vision/polina/projects/fetal/common-data/pose/SeboPoseLabel',
+    opts = {'rawdata_path': '../path_to_epis/',
+            'label_path': '../path_to_labels/',
             'custom_augmentation': True,
             'baseline': False,
             'use_fetal_inpainting': False,
@@ -444,7 +442,7 @@ if __name__ == '__main__':
     opts                = type('opts', (object,), opts)
 
     train_dataset       = Dataset('train', opts)
-    train_dataloader    = torch.utils.data.DataLoader(train_dataset, batch_size=4, shuffle=True)#, collate_fn=collate_fn)
+    train_dataloader    = torch.utils.data.DataLoader(train_dataset, batch_size=4, shuffle=True)
     
     for batch in train_dataloader:
         volume, labels, segmentations = batch

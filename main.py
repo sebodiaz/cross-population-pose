@@ -37,7 +37,7 @@ def main(opts):
     )
     fabric.launch()
 
-    # -------------------- Train or Finetune Stage --------------------
+    ### TRAIN
     if opts.stage in ['train', 'finetune']:
         
         # Get and setup dataloaders
@@ -68,7 +68,7 @@ def main(opts):
         # Initialize best validation score (PCK)
         best_val = float('-inf')  # Higher is better for PCK
 
-        # -------------------- Training Loop --------------------
+        # Training loop
         for epoch in range(start_epoch, opts.epochs):
             utils.train(epoch, model, trainloader, loss_fn, optimizer, scheduler, fabric, opts)
             utils.save_model_latest(model, optimizer, scheduler, epoch, opts)
@@ -83,14 +83,14 @@ def main(opts):
 
         wandb.finish()  # End wandb run
 
-    # -------------------- Test Stage --------------------
+    ### TEST
     elif opts.stage == 'test':
         testloader  = utils.get_offline_dataloader(opts)
         model       = utils.load_model(model, opts)
         utils.test(model, testloader, opts)
 
     
-    # Inference stage
+    ### INFERENCE
     elif opts.stage == 'inference':
         # Load the model
         model = utils.load_model(model, opts)
