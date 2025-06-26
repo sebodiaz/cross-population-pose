@@ -5,3 +5,13 @@ logs/
 results/
 errors/
 *.ipynb
+inpainting/clean-masks/*
+!inpainting/clean-masks/.gitkeep
+inpainting/clean-raw/*
+!inpainting/clean-raw/.gitkeep
+inpainting/labels/*
+!inpainting/labels/.gitkeep
+inpainting/raw-bold-epi/*
+!inpainting/raw-bold-epi/.gitkeep
+inpainting/raw-bold-epi-outputs/*
+!inpainting/raw-bold-epi-outputs/.gitkeep
