@@ -30,6 +30,19 @@ Repository for more robust keypoint detection across gestation and acquisition a
 └── README.md
 ```
 
+## Installation
+
+You can set up the environment with **Conda**.
+
+### conda
+
+```bash
+conda env create -f environment.yml
+conda activate pose
+```
+
+
+
 ## Logistics
 I use [Weights & Biases](https://wandb.ai/) to log my training runs. If you want to use it, you will need to log into your own account. If you do not use it, adjust the code accordingly (delete all instances where "wandb" appears).
 

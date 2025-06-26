@@ -28,7 +28,7 @@ joint_names = ['left_ankle', 'right_ankle', 'left_knee', 'right_knee', 'bladder'
                'right_hip', 'left_shoulder', 'right_shoulder', 'left_wrist',
                'right_wrist',]
 
-# Transformations
+
 class NormalizeByPercentile(tio.Transform):
     """
     Normalize volume by dividing by the 99th percentile of non-zero values.
@@ -64,8 +64,6 @@ class NormalizeByPercentile(tio.Transform):
         
         return subject
 
-
-# Define some utility functions
 def check_arg(parse_fn=None, valid_list=None, allow_none=False):
     def new_parse_fn(x):
         if allow_none and (x is None or x == 'None'):
@@ -161,9 +159,6 @@ def set_seeds(seed):
     np.random.seed(seed)
     random.seed(seed)
     
-    # To ensure the proper seed, print the seed from each of the libraries
-    # print(f"Seed: {seed}, torch: {torch.initial_seed()}, numpy: {np.random.get_state()[1][0]}, random: {random.getstate()[1][0]}")
-    
 # Get the dataloader
 def get_dataloader(opts):    
     if opts.stage == 'train':
@@ -199,9 +194,6 @@ def get_dataloader(opts):
     
         return test_dl, None
     
-
-
-
 # Save the model
 def save_model_best(model, optimizer, scheduler, epoch, opts):
     torch.save({
@@ -219,17 +211,6 @@ def save_model_latest(model, optimizer, scheduler, epoch, opts):
         'scheduler': scheduler.state_dict(),
     }, f'{opts.save_path}/checkpoints/latest.pth')
 
-# Get amix
-def get_amix(opts):
-    from models.small_unet import Unet
-    amix = Unet(dimension=3,
-                input_nc=1,
-                output_nc=16,
-                ngf=16,
-                num_downs=4,)
-    amix.load_state_dict(torch.load(f'/data/vision/polina/users/sebodiaz/projects/Act2Learn/pretrained/anatomix.pth'), strict=True)
-    return torch.nn.Sequential(amix, torch.nn.InstanceNorm3d(16))
-    
 
 # Get optimizer
 def get_optimizer(model, opts):
