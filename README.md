@@ -27,6 +27,8 @@ Repository for more robust keypoint detection across gestation and acquisition a
 │   ├── clean-masks/                # validated segmentation masks
 │   ├── train-data/                 # generated synthetic training data
 │   └── labels/                     # keypoint coordinate files (.mat format)
+weights
+│   └── paper.pth                   # weights from the paper
 └── README.md
 ```
 
